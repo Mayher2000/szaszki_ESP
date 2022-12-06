@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <micromax.h>
+#include <vector>
 
 #define EMPTY 0
 #define WHITE 8

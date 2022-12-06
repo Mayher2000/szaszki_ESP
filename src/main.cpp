@@ -24,18 +24,11 @@
 #define SIG_DOD         32
 	
 // zarządanie kolorami pól szachownicy
-#define LED_WHITE       CRGB(255, 255, 255)
-#define LED_BLACK       CRGB(0, 0, 0)
-#define LED_RED         CRGB(255, 0, 0)
-#define LED_GREEN       CRGB(0, 255, 0)
-#define LED_BLUE        CRGB(0, 0, 255)
-#define LED_PINK        CRGB(255, 0, 255)
-#define LED_YELLOW      CRGB(255, 255, 0)
-#define LED_AQUA        CRGB(0, 255, 255)
 CRGB darkSquare = CRGB(0, 0, 0);
 CRGB lightSquare = CRGB(255, 255, 255);
 CRGB success = CRGB(0, 255, 0);
 CRGB danger = CRGB(255, 0, 0);
+CRGB warning = CRGB(255, 255, 0);
 
 // tablica ledów
 CRGB leds[NUM_LEDS];
@@ -126,6 +119,7 @@ bool notAllowedMoveFlag = true;
 bool isEngineOn = true;
 bool engineColor = 1; // jeśli false to silnik zaczyna białymi, inaczej zaczyna czarnymi
 int lastHmain[4] = {8, 8, 8, 8};
+String fen = "";
 
 // tablice ruchów dla bierek
 int knightMoves[8][2] = {{-1, -2}, {1, -2}, {-1, 2}, {1, 2}, {2, -1}, {-2, -1}, {2, 1}, {-2, 1}};
@@ -169,6 +163,9 @@ int checkStaleMate();
 void makeEngineMove(int lastHmain[4]);
 void isGameOver();
 void boardToCfs();
+
+void fenToCfs();
+void CfsToFen();
 
 // ######################## WIFI @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 // przejrzeć sobie
@@ -379,6 +376,21 @@ void setupWifi(){
     }
   });
 
+  server.on("/setFen", HTTP_GET, [](AsyncWebServerRequest *request){
+    String fenParam;
+    if (request->hasParam("fen")) {
+      fenParam = request->getParam("fen")->value();
+      fen = fenParam;
+      Serial.println("Nowy fen to: " + fen);
+      fenToCfs();
+      request->send(200, "text/plain", "OK");
+      printChessboard();
+    }
+    else {
+      request->send(500, "text/plain", "NOT OK");
+    }
+  });
+
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
   server.begin();
 }
@@ -414,7 +426,7 @@ void loop(){
           // podniesienie swojej bierki w turze przeciwnika
           // czeka aż ta bierka zostanie odłożona na podświetlone pole
           if ((!turn && raisedPieceName <= 6) || (turn && raisedPieceName > 6)){
-            setLed(i, j, CRGB(255,0,0));
+            setLed(i, j, danger);
             FastLED.show();
             hall = readMux(i, j);
             while (hall < whiteMagFieldStr && hall > blackMagFieldStr){ hall = readMux(i, j); }
@@ -464,20 +476,20 @@ void loop(){
                     // wykonanie niedozwolonego ruchu
                     if (allowedMovesArr[l][m] == 0 && (i != l || j != m)){
                       lightChessboard();
-                      setLed(l, m, CRGB(255,0,0));
+                      setLed(l, m, danger);
                       FastLED.show();
                       long tim = millis();
                       short color;
                       hall = readMux(l, m);
                       while (hall > whiteMagFieldStr || hall < blackMagFieldStr){
                         if (millis() - tim > 500){
-                          color ? (color = 0, setLed(l, m, CRGB(255,0,0))) : (color = 1, ((l + m) % 2 ? setLed(l, m, CRGB(0,0,0)) : setLed(l, m, CRGB(255,255,255))));
+                          color ? (color = 0, setLed(l, m, danger)) : (color = 1, ((l + m) % 2 ? setLed(l, m, darkSquare) : setLed(l, m, lightSquare)));
                           FastLED.show();
                           tim = millis();
                         }
                         hall = readMux(l, m);
                       }
-                      (l + m) % 2 ? setLed(l, m, CRGB(0,0,0)) : setLed(l, m, CRGB(255,255,255));
+                      (l + m) % 2 ? setLed(l, m, darkSquare) : setLed(l, m, lightSquare);
                       allowedMovesArr[l][m] = 0;
                       allowedMoves(raisedPieceName, i, j);
                       break;
@@ -502,7 +514,7 @@ void loop(){
                         // bije czarnym pionkiem białego pionka
                         if (turn && ((j == m + 1 && m == pawnMoved[!turn]) || (j == m - 1 && m == pawnMoved[!turn]))){
                           lightChessboard();
-                          setLed(l - 1, m, CRGB(255,0,0));
+                          setLed(l - 1, m, danger);
                           FastLED.show();
                           while (readMux(l - 1, m) > whiteMagFieldStr){}
                           chessFieldState[l - 1][m] = 0;
@@ -510,7 +522,7 @@ void loop(){
                         // bije białym pionkiem czarnego pionka
                         else if (!turn && ((j == m + 1 && m == pawnMoved[!turn]) || (j == m - 1 && m == pawnMoved[!turn]))){
                           lightChessboard();
-                          setLed(l + 1, m, CRGB(255,0,0));
+                          setLed(l + 1, m, danger);
                           FastLED.show();
                           while (readMux(l + 1, m) < blackMagFieldStr){}
                           chessFieldState[l + 1][m] = 0;
@@ -664,7 +676,7 @@ int allowedMoves(int piece, int x, int y, int checkOnly){
     return breakFlag;
   }
   else{
-    setLed(x, y, CRGB(255,255,0));
+    setLed(x, y, warning);
     FastLED.show();
     return 0;
   }
@@ -888,9 +900,9 @@ int knightCheck(int knight, int x, int y, int checkOnly){
       return 1;
     }
     else if (!check && !checkOnly){
-      if(!tmp) setLed(x + knightMoves[i][0], y + knightMoves[i][1], CRGB(0,255,0));
-      else if(turn && tmp > 6) setLed(x + knightMoves[i][0], y + knightMoves[i][1], CRGB(255,0,0));
-      else if(!turn && tmp < 7) setLed(x + knightMoves[i][0], y + knightMoves[i][1], CRGB(255,0,0));
+      if(!tmp) setLed(x + knightMoves[i][0], y + knightMoves[i][1], success);
+      else if(turn && tmp > 6) setLed(x + knightMoves[i][0], y + knightMoves[i][1], danger);
+      else if(!turn && tmp < 7) setLed(x + knightMoves[i][0], y + knightMoves[i][1], danger);
     }
   }
   return 0;
@@ -926,23 +938,23 @@ int pawnCheck(int pawn, int x, int y, int checkOnly){
   }
   if (!checkOnly){
     if (!check[0] && !tmp[0]){
-    setLed(x + pawnMoves[0][turn], y, CRGB(0,255,0));
+    setLed(x + pawnMoves[0][turn], y, success);
     if (!check[1] && x == pawnLine && !tmp[1])
-      setLed(x + pawnMoves[2][turn], y, CRGB(0,255,0)); 
+      setLed(x + pawnMoves[2][turn], y, success); 
   }
   if (!check[2] && tmp[2] > turn * 6 && tmp[2] <= (turn + 1) * 6) 
-    setLed(x + pawnMoves[4][turn], y + pawnMoves[5][turn], CRGB(255,0,0));
+    setLed(x + pawnMoves[4][turn], y + pawnMoves[5][turn], danger);
   if (!check[3] && tmp[3] > turn * 6 && tmp[3] <= (turn + 1) * 6) 
-    setLed(x + pawnMoves[6][turn], y + pawnMoves[7][turn], CRGB(255,0,0));
+    setLed(x + pawnMoves[6][turn], y + pawnMoves[7][turn], danger);
   // bicie w przelocie
   if (!check[4] && !turn && x == 3 && pawnMoved[!turn] == y + 1)
-    setLed(x - 1, y + 1, CRGB(255,0,0));
+    setLed(x - 1, y + 1, danger);
 	else if (!check[4] && turn && x == 4 && pawnMoved[!turn] == y + 1)
-    setLed(x + 1, y + 1, CRGB(255,0,0));
+    setLed(x + 1, y + 1, danger);
   if(!check[5] && !turn && x == 3 && pawnMoved[!turn] == y - 1)
-    setLed(x - 1, y - 1, CRGB(255,0,0));
+    setLed(x - 1, y - 1, danger);
   else if (!check[5] && turn && x == 4 && pawnMoved[!turn] == y - 1)
-    setLed(x + 1, y - 1, CRGB(255,0,0));
+    setLed(x + 1, y - 1, danger);
   }
 	return 0;
 }  
@@ -964,17 +976,17 @@ int queenCheck(int queen, int x, int y, int moves[][2], int checkOnly){
           return 1;
         // jeśli pole na ktore potencjalnie chcemy postawic figure jest puste zaświeć na zielono
         if(!tmp)
-          setLed(x + i * moves[j][0], y + i * moves[j][1], CRGB(0,255,0));
+          setLed(x + i * moves[j][0], y + i * moves[j][1], success);
         // jeśli na polu jest biała bierka i ruch czarnych to zaświeć pole na czerowno
         else if(tmp > 6 && turn){
-          setLed(x + i * moves[j][0], y + i * moves[j][1], CRGB(255,0,0));
+          setLed(x + i * moves[j][0], y + i * moves[j][1], danger);
           break;
         } // czarna bierka i ruch czarnych
         else if(tmp <= 6 && turn)
           break;
          // czarna bierka i ruch białych 
         else if(tmp <= 6 && !turn){
-          setLed(x + i * moves[j][0], y + i * moves[j][1], CRGB(255,0,0));
+          setLed(x + i * moves[j][0], y + i * moves[j][1], danger);
           break;
         } // biała bierka i ruch białych
         else 
@@ -994,10 +1006,10 @@ int kingCheck(int king, int x, int y, int checkOnly){
     if((x + kingMoves[i][0]) < 8 && (x + kingMoves[i][0]) >= 0 && (y + kingMoves[i][1]) < 8 && (y + kingMoves[i][1]) >= 0){
       if (!checkOnly && !checkIfCheck(0, x + kingMoves[i][0], y + kingMoves[i][1])){
         if(!chessFieldState[x + kingMoves[i][0]][y + kingMoves[i][1]]){
-          setLed(x + kingMoves[i][0], y + kingMoves[i][1], CRGB(0,255,0));
+          setLed(x + kingMoves[i][0], y + kingMoves[i][1], success);
         } 
-        else if(!turn && chessFieldState[x + kingMoves[i][0]][y + kingMoves[i][1]] <= 6) setLed(x + kingMoves[i][0], y + kingMoves[i][1], CRGB(255,0,0));
-        else if(turn && chessFieldState[x + kingMoves[i][0]][y + kingMoves[i][1]] > 6) setLed(x + kingMoves[i][0], y + kingMoves[i][1], CRGB(255,0,0));
+        else if(!turn && chessFieldState[x + kingMoves[i][0]][y + kingMoves[i][1]] <= 6) setLed(x + kingMoves[i][0], y + kingMoves[i][1], danger);
+        else if(turn && chessFieldState[x + kingMoves[i][0]][y + kingMoves[i][1]] > 6) setLed(x + kingMoves[i][0], y + kingMoves[i][1], danger);
       }
       else if(!checkIfCheck(0, x + kingMoves[i][0], y + kingMoves[i][1]) && checkOnly) return 1;
     }
@@ -1007,10 +1019,10 @@ int kingCheck(int king, int x, int y, int checkOnly){
   if (!checkOnly){
     if (!moved[0][turn] && !moved[1][turn] && !chessFieldState[x][y - 1] && !checkIfCheck(0, x, y - 1) && !chessFieldState[x][y - 2] && \
         !checkIfCheck(0, x, y - 2) && !chessFieldState[x][y - 3] && chessFieldState[x][y - 4] == (7 - (6 * turn)))
-      setLed(x, y - 2, CRGB(0,255,0));
+      setLed(x, y - 2, success);
     if (!moved[0][turn] && !moved[2][turn] && !chessFieldState[x][y + 1] && !checkIfCheck(0, x, y + 1) && !chessFieldState[x][y + 2] && \
         !checkIfCheck(0, x, y + 2) && chessFieldState[x][y + 3] == (7 - (6 * turn)))
-      setLed(x, y + 2, CRGB(0,255,0));
+      setLed(x, y + 2, success);
   }
   return 0;
 }
@@ -1055,8 +1067,8 @@ void checkIfCastle(int piece, int i, int j, int m){
 
 // funkcja wymuszjąca dokończenie roszady po ruchu królem
 void castle(int x, int y, int y1){
-  setLed(x, y, CRGB(255,255,0));
-  setLed(x, y1, CRGB(0,255,0));
+  setLed(x, y, warning);
+  setLed(x, y1, success);
   FastLED.show();
   hall = readMux(x, y1);
   while (hall < whiteMagFieldStr && hall > blackMagFieldStr){ hall = readMux(x, y1); }
@@ -1104,8 +1116,8 @@ void makeEngineMove(int lastHmain[4]){
   // wyświetlenie szachownicy
   // wykonanie ruchu silnika
   // podświetlenie ruchu
-  setLed(xStart, yStart, CRGB(255,255,0));
-  setLed(xEnd, yEnd, CRGB(0,255,0));
+  setLed(xStart, yStart, warning);
+  setLed(xEnd, yEnd, success);
   FastLED.show();
   // oczekiwanie na podniesienie bierki z pola startowego i ogłożenie jej na pole końcowe
   hall = readMux(xStart, yStart);
@@ -1135,4 +1147,128 @@ void boardToCfs(){
     }
     Serial.println();
   }
+}
+
+void CfsToFen() {
+  // wypisanie zawartości szachownicy do fena
+  String cfsToFenMap = ".rnbqkpRNBQKP";
+  fen = "";
+  int emptyCounter = 0;
+
+  for (int i = 0; i < 8; i++) {
+    for (int j = 0; j < 8; j++) {
+      if (!chessFieldState[i][j]) {
+        emptyCounter++;
+      }
+      else {
+        if (emptyCounter > 0) {
+          fen += String(emptyCounter);
+          emptyCounter = 0;
+        }
+        fen += cfsToFenMap[chessFieldState[i][j]];
+      }
+    }
+    if (emptyCounter > 0) {
+      fen += String(emptyCounter);
+      emptyCounter = 0;
+    }
+    if (i != 7) fen += "/";
+  }
+
+  // wpisywanie kolou do fena
+  turn ? fen += " b " : fen += " w ";
+
+  // roszady:
+  int castleCounter = 0;
+
+  // fen roszady dla białych
+  if (!moved[0][0]) {
+    if (moved[2][0]) castleCounter++;
+    else fen += "K";
+    if (moved[1][0]) castleCounter++;
+    else fen += "Q";
+  }
+  else {
+    castleCounter += 2;
+  }
+  // fen roszady dla czarnych
+  if (!moved[0][1]) {
+    if (moved[2][1]) castleCounter++;
+    else fen += "k";
+    if (moved[1][1]) castleCounter++;
+    else fen += "q";
+  }
+  else {
+    castleCounter += 2;
+  }
+
+  if (castleCounter >= 4) {
+    fen += "-";
+  }
+}
+
+
+void fenToCfs() {
+  int i = 0, j = 0, n = 0;
+  while (fen[n] != ' ') {
+    if (fen[n] != '/') {
+      switch (fen[n]) {
+        case 'r': chessFieldState[i][j] = 1; j++; break;
+        case 'n': chessFieldState[i][j] = 2; j++; break;
+        case 'b': chessFieldState[i][j] = 3; j++; break;
+        case 'q': chessFieldState[i][j] = 4; j++; break;
+        case 'k': chessFieldState[i][j] = 5; j++; break;
+        case 'p': chessFieldState[i][j] = 6; j++; break;
+        case 'R': chessFieldState[i][j] = 7; j++; break;
+        case 'N': chessFieldState[i][j] = 8; j++; break;
+        case 'B': chessFieldState[i][j] = 9; j++; break;
+        case 'Q': chessFieldState[i][j] = 10; j++; break;
+        case 'K': chessFieldState[i][j] = 11; j++; break;
+        case 'P': chessFieldState[i][j] = 12; j++; break;
+        case '1': chessFieldState[i][j] = 0; j++; break;
+        case '2': for (int k = 0; k < 2; k++) { chessFieldState[i][j] = 0; j++; } break;
+        case '3': for (int k = 0; k < 3; k++) { chessFieldState[i][j] = 0; j++; } break;
+        case '4': for (int k = 0; k < 4; k++) { chessFieldState[i][j] = 0; j++; } break;
+        case '5': for (int k = 0; k < 5; k++) { chessFieldState[i][j] = 0; j++; } break;
+        case '6': for (int k = 0; k < 6; k++) { chessFieldState[i][j] = 0; j++; } break;
+        case '7': for (int k = 0; k < 7; k++) { chessFieldState[i][j] = 0; j++; } break;
+        case '8': for (int k = 0; k < 8; k++) { chessFieldState[i][j] = 0; j++; } break;
+        default: break;
+      }
+    }
+    else {
+      i++;
+      j = 0;
+    }
+    n++;
+  }
+
+  // przykładowy FEN: 8/5k2/3p4/1p1Pp2p/pP2Pp1P/P4P1K/8/8 b KQkq e3 99 50 silnik00
+  // ustawianie turnów
+  n++;
+  fen[n] == 'w' ? turn = 0 : turn = 1;
+  
+  // dostępne roszady
+  n++;
+  while (fen[n] != ' ') {
+    switch (fen[n]) {
+      case 'K': moved[2][0] = 0; break;
+      case 'Q': moved[1][0] = 0; break;
+      case 'k': moved[2][1] = 0; break;
+      case 'q': moved[1][1] = 0; break;
+      case '-': moved[0][1] = moved[0][0] = 1; break;
+    }
+    n++;
+  }
+
+  // dostępne bicie w przelocie
+
+  // ustawianie silnika dwa bity
+  // pierwszy bit 1 - ON, 0 - OFF
+  n++;
+  fen[n] == '1' ? isEngineOn = true : isEngineOn = false;
+  // drugi bit 0 - ruch białych, 1 - ruch czarnych
+  n++;
+  fen[n] == '1' ? engineColor = true : engineColor = false;
+
 }
