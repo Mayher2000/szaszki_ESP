@@ -1,0 +1,1008 @@
+#include <Arduino.h>
+#include <FastLED.h>
+#include <SPI.h>
+
+// LEDs config
+#define LED_PIN         23
+#define NUM_LEDS        384
+#define BRIGHTNESS      10 // 255
+#define LED_TYPE        WS2812B
+#define COLOR_ORDER     GRB
+
+// Mux control pins
+#define S0              26
+#define S1              25
+#define S2              33
+#define S3              32
+
+// Mux in "SIG" pin
+#define SIG_PIN1        35
+#define SIG_PIN2        34
+#define SIG_PIN3        39
+#define SIG_PIN4        36
+
+// tablica ledów
+CRGB leds[NUM_LEDS];
+
+// tablica do odczytywania sygnałów z multiplekserów, uporządkowana jak pola szachownicy tj. A1 - (mux1, ch0), B1 - (mux1, ch1)... A2 - (mux1, ch8) ... A3 - (mux2, ch0) ...
+const short muxMapArray[8][8][2] = {{{SIG_PIN1, 7},  {SIG_PIN1, 6},   {SIG_PIN1, 5},  {SIG_PIN1, 4},  {SIG_PIN1, 3},  {SIG_PIN1, 2},  {SIG_PIN1, 1},  {SIG_PIN1, 0}},
+                                    {{SIG_PIN1, 15}, {SIG_PIN1, 14},  {SIG_PIN1, 13}, {SIG_PIN1, 12}, {SIG_PIN1, 11}, {SIG_PIN1, 10}, {SIG_PIN1, 9},  {SIG_PIN1, 8}},
+                                    {{SIG_PIN2, 7},  {SIG_PIN2, 6},   {SIG_PIN2, 5},  {SIG_PIN2, 4},  {SIG_PIN2, 3},  {SIG_PIN2, 2},  {SIG_PIN2, 1},  {SIG_PIN2, 0}},
+                                    {{SIG_PIN2, 15}, {SIG_PIN2, 14},  {SIG_PIN2, 13}, {SIG_PIN2, 12}, {SIG_PIN2, 11}, {SIG_PIN2, 10}, {SIG_PIN2, 9},  {SIG_PIN2, 8}},
+                                    {{SIG_PIN3, 7},  {SIG_PIN3, 6},   {SIG_PIN3, 5},  {SIG_PIN3, 4},  {SIG_PIN3, 3},  {SIG_PIN3, 2},  {SIG_PIN3, 1},  {SIG_PIN3, 0}},
+                                    {{SIG_PIN3, 15}, {SIG_PIN3, 14},  {SIG_PIN3, 13}, {SIG_PIN3, 12}, {SIG_PIN3, 11}, {SIG_PIN3, 10}, {SIG_PIN3, 9},  {SIG_PIN3, 8}},
+                                    {{SIG_PIN4, 7},  {SIG_PIN4, 6},   {SIG_PIN4, 5},  {SIG_PIN4, 4},  {SIG_PIN4, 3},  {SIG_PIN4, 2},  {SIG_PIN4, 1},  {SIG_PIN4, 0}},
+                                    {{SIG_PIN4, 15}, {SIG_PIN4, 14},  {SIG_PIN4, 13}, {SIG_PIN4, 12}, {SIG_PIN4, 11}, {SIG_PIN4, 10}, {SIG_PIN4, 9},  {SIG_PIN4, 8}}};
+
+// tablica do odczytywania numeru ledów, uporządkowana tak jak biegnął ledy pod szachownicą
+short ledMapArray[8][8][6];
+// = {{{0, 1, 2, 45, 46, 47}, {3, 4, 5, 42, 43, 44}, {6, 7, 8, 39, 40, 41}, {9, 10, 11, 36, 37, 38}, {12, 13, 14, 33, 34, 35}, {15, 16, 17, 30, 31, 32}, {18, 19, 20, 27, 28, 29}, {21, 22, 23, 24, 25, 26}},
+
+
+
+
+// tablica pozycji bierek (domyślnie uzupełniona)
+// pierwsza współrzędna to wiersz, druga to kolumna
+// BR1, BN1, BB1, BQ, BK, BB2, BN2, BR2
+// BP1, BP2, BP3, BP4, BP5, BP6, BP7, BP8
+// WP1, WP2, WP3, WP4, WP5, WP6, WP7, WP8,
+// WR1, WN1, WB1, WQ, WK, WB2, WN2, WR2, 
+// figura poza szachownicą posiada kordy (8,8)
+// figura podniesiona posiada kordy (9,9)
+// short piecesPosition[32][2] = {{0,0},{0,1},{0,2},{0,3},{0,4},{0,5},{0,6},{0,7},
+//                                {1,0},{1,1},{1,2},{1,3},{1,4},{1,5},{1,6},{1,7},
+//                                {6,0},{6,1},{6,2},{6,3},{6,4},{6,5},{6,6},{6,7},
+//                                {7,0},{7,1},{7,2},{7,3},{7,4},{7,5},{7,6},{7,7}};
+// A8 - 0.0 B8 - 0.1 C8 - 0.2 D8 - 3.3 E8 - 0.4  F8 - 0.5 G2 - 0.6 H8 - 0.7  
+// A7 - 1.0 B7 - 1.1 C7 - 1.2 D7 - 3.3 E7 - 1.4  F7 - 1.5 G7 - 1.6 H7 - 1.7  
+// A6 - 2.0 B6 - 2.1 C6 - 2.2 D6 - 3.3 E6 - 2.4  F6 - 2.5 G6 - 2.6 H6 - 2.7  
+// A5 - 3.0 B5 - 3.1 C5 - 3.2 D5 - 3.3 E5 - 3.4  F5 - 3.5 G5 - 3.6 H5 - 3.7  
+// A4 - 4.0 B4 - 4.1 C4 - 4.2 D4 - 4.3 E4 - 4.4  F4 - 4.5 G4 - 4.6 H4 - 4.7  
+// A3 - 5.0 B3 - 5.1 C3 - 5.2 D3 - 5.3 E3 - 5.4  F3 - 5.5 G3 - 5.6 H3 - 5.7 
+// A2 - 6.0 B2 - 6.1 C2 - 6.2 D2 - 6.3 E2 - 6.4  F2 - 6.5 G2 - 6.6 H2 - 6.7  
+// A1 - 7.0 B1 - 7.1 C1 - 7.2 D1 - 7.3 E1 - 7.4  F1 - 7.5 G1 - 7.6 H1 - 7.7 
+short piecesPosition[32][2] = {{8,8},{0,1},{8,8},{8,8},{0,4},{8,8},{0,6},{8,8},
+                               {8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},
+                               {8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},
+                               {7,0},{8,8},{8,8},{8,8},{7,4},{8,8},{8,8},{7,7}};
+
+// short blackPiecesPosition[16][2] = {{0,7},{1,7},{2,7},{3,7},{4,7},{5,7},{6,7},{7,7},
+//                                     {0,6},{1,6},{2,6},{3,6},{4,6},{5,6},{6,6},{7,6}};
+
+const char *piecesNames[33] = {"BR","BN","BB","BQ","BK","BB","BN","BR",
+                               "BP","BP","BP","BP","BP","BP","BP","BP",
+                               "WP","WP","WP","WP","WP","WP","WP","WP",
+                               "WR","WN","WB","WQ","WK","WB","WN","WR",
+                               "E"};
+
+// short chessFieldState[8][8] = {{-1, -1, -1, -1, -1, -1, -1, -1},
+//                                {-1, -1, -1, -1, -1, -1, -1, -1},
+//                                { 0,  0,  0,  0,  0,  0,  0,  0},
+//                                { 0,  0,  0,  0,  0,  0,  0,  0},
+//                                { 0,  0,  0,  0,  0,  0,  0,  0},
+//                                { 0,  0,  0,  0,  0,  0,  0,  0},
+//                                { 1,  1,  1,  1,  1,  1,  1,  1},
+//                                { 1,  1,  1,  1,  1,  1,  1,  1}};
+
+short chessFieldState[8][8] = {{0, 0, 0, 0, 0, 0, 0, 0},
+                               {0, 0, 0, 0, 0, 0, 0, 0},
+                               {0, 0, 0, 0, 0, 0, 0, 0},
+                               {0, 0, 0, 0, 0, 0, 0, 0},
+                               {0, 0, 0, 0, 0, 0, 0, 0},
+                               {0, 0, 0, 0, 0, 0, 0, 0},
+                               {0, 0, 0, 0, 0, 0, 0, 0},
+                               {0, 0, 0, 0, 0, 0, 0, 0}};
+
+// short chessFieldState[8][8] = {{1, 1, 1, 1, 1, 1, 1, 1},
+//                                {1, 1, 1, 1, 1, 1, 1, 1},
+//                                {0, 0, 0, 0, 0, 0, 0, 0},
+//                                {0, 0, 0, 0, 0, 0, 0, 0},
+//                                {0, 0, 0, 0, 0, 0, 0, 0},
+//                                {0, 0, 0, 0, 0, 0, 0, 0},
+//                                {1, 1, 1, 1, 1, 1, 1, 1},
+//                                {1, 1, 1, 1, 1, 1, 1, 1}};
+
+// tablica flag, które determinują dalsze sprawdzanie możliwości ruchu figur (allowedMoves())
+bool dirFlag[8] = {1, 1, 1, 1, 1, 1, 1, 1};
+
+bool ppflag = false;
+// bool colorFlag = true;
+short raisedCords[2] = {8,8};
+short raisedPieceName = 33;
+bool notAllowedMoveFlag = true;
+bool turn;
+
+int knightMoves[8][2] = {{-1, -2}, {1, -2}, {-1, 2}, {1, 2}, {2, -1}, {-2, -1}, {2, 1}, {-2, 1}};
+
+void lightChessBoard();
+void printChessBoard();
+int readMux(int SIG_pin, int channel);
+void allowedMoves(int pice, int x, int y);
+void setLed(int x, int y, CRGB c);
+void fillChessFieldState();
+void mapLeds();
+
+int rook(int x, int y, int x1, int y1);
+int bishop(int x, int y, int x1, int y1);
+int queen(int x, int y, int x1, int y1);
+int horse(int x, int y, int x1, int y1);
+int pawn(int x, int y, int x1, int y1);
+
+void knightCheck(int knight, int x, int y, int xSwap, int ySwap, int turn);
+
+bool checkIfCheck();
+bool checkIfCheck_king(int x1, int y1);
+
+void setup(){
+  // inicjalizacja portu szeregowego (wysoki baudrate, żeby "konsolowa animacja" była bardziej dynamiczna)
+  Serial.begin(500000);
+  // inicjalizacja paska ledów
+  FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS);
+  FastLED.setBrightness(BRIGHTNESS);
+
+  // inicjalizacja wyjść multiplekserów i ustawienie ich stanów
+  pinMode(S0, OUTPUT); 
+  pinMode(S1, OUTPUT); 
+  pinMode(S2, OUTPUT); 
+  pinMode(S3, OUTPUT); 
+
+  digitalWrite(S0, LOW);
+  digitalWrite(S1, LOW);
+  digitalWrite(S2, LOW);
+  digitalWrite(S3, LOW);
+
+  printChessBoard();
+  fillChessFieldState();
+  //funkcja mapująca ledy
+  mapLeds();
+}
+
+
+void loop(){
+  // zawsze na start w loop() będzie rysowana szachownica
+  lightChessBoard();
+
+  // przejście po szachownicy
+  for (int i = 0; i < 8; i++){
+    for (int j = 0; j < 8; j++){
+      
+      // odczytujemy czy pole szachowe jest puste
+      if (readMux(muxMapArray[i][j][0], muxMapArray[i][j][1]) < 2500){
+        // wiemy, że pole jest puste, sprawdzamy czy coś na tym polu stało wcześniej (w tablicy pozycji pionków)
+        for (int k = 0; k < 32; k++){
+          // jeśli na polu coś wcześniej stało a teraz tego nie ma to:
+          if (piecesPosition[k][0] == i && piecesPosition[k][1] == j){
+            // zapisujemy kordy podniesionego pionka
+            raisedCords[0] = piecesPosition[k][0];
+            raisedCords[1] = piecesPosition[k][1];
+            chessFieldState[raisedCords[0]][raisedCords[1]] = 0;
+            // zapisujemy jaki to był pionek (0 - czarna wieża itd.)
+            raisedPieceName = k + 1;
+            // zmieniamy kordy pionka na podniesione (9,9)
+            piecesPosition[k][0] = 9;
+            piecesPosition[k][1] = 9;
+            allowedMoves(raisedPieceName, raisedCords[0], raisedCords[1]);
+            printChessBoard();
+            // checkIfCheck();
+            // zaczynamy szukać pola, na które pionek został odłożnoy
+            while (piecesPosition[raisedPieceName - 1][0] == 9){
+              // przejście po wszystkich polach szachownicy
+              for (int l = 0; l < 8; l++){
+                for (int m = 0; m < 8; m++){
+                  // opuszczenie flagi służącej do sprawdzenia czy pionek wcześniej stał już na danym polu
+                  ppflag = false;
+                  // odczytanie czy na polu szachowym znajduje się pionek
+                  if (readMux(muxMapArray[l][m][0], muxMapArray[l][m][1]) > 2500){
+                    // sprawdzenie czy pionek wcześniej znajdował się na danym polu
+                    for (int n = 0; n < 32; n++){
+                      // jeśli tak, to podnosimy pepeFlage
+                      if (ppflag == false && piecesPosition[n][0] == l && piecesPosition[n][1] == m){
+                        ppflag = true;
+                        break;
+                      }
+                    }
+                    // jeśli flaga jest opuszczona, oznacza to że sprawdzane pole wcześniej było puste
+                    if (!ppflag){
+                      // zmiana kordów opuszczonego pionka (umożliwia wyjście z pętli while)
+                      piecesPosition[raisedPieceName - 1][0] = l;
+                      piecesPosition[raisedPieceName - 1][1] = m;
+                      chessFieldState[l][m] = raisedPieceName;
+                      // chessFieldState[l][m] = 1; // trzeba zmienić potem
+                      printChessBoard();
+                      // checkIfCheck();
+                    }
+                    
+                  }
+                }
+              }
+              //printChessBoard();
+              // Serial.println(readMux(muxMapArray[0][0][0], muxMapArray[0][0][1]));
+              //delay(1000);
+            }
+          }
+        }
+      }
+    }
+  }
+  FastLED.show();
+
+  // wyświetlanie szachownicy w serial monitorze
+  // Serial.println(readMux(muxMapArray[0][0][0], muxMapArray[0][0][1]));
+}
+
+void lightChessBoard(){
+    // startujemy od 0 (A1), inkrementujemy o 2
+  for (int i = 0; i < 8; i += 2){
+    for (int j = 0; j < 8; j++){
+      for (int k = 0; k < 6; k++){
+        if (j % 2 == 1){
+          leds[ledMapArray[i][j][k]] = CRGB(255, 255, 255);
+          leds[ledMapArray[i + 1][j][k]] = CRGB(0, 0, 0);
+        }
+        else {
+          leds[ledMapArray[i][j][k]] = CRGB(0, 0, 0);
+          leds[ledMapArray[i + 1][j][k]] = CRGB(255, 255, 255);
+        }
+      }
+    }
+  }
+  FastLED.show();
+}
+
+void printChessBoard(){
+  // rysowanie szachownicy w konsoli
+  Serial.println("---------------------------------------------------------------------------------------------------------------------------------");
+  for (int i = 0; i < 8; i++){
+    Serial.print("|");
+    for (int j = 0; j < 8; j++){
+      Serial.print("\t");
+      Serial.print("\t");
+      Serial.print("|");
+    }
+    Serial.println();
+    Serial.print("|");
+    for (int j = 0; j < 8; j++){
+      Serial.print("\t");
+      Serial.print(readMux(muxMapArray[i][j][0], muxMapArray[i][j][1]));
+      Serial.print(" ");
+      for (int k=0; k<32; k++){
+        if (piecesPosition[k][0] == i && piecesPosition[k][1] == j){
+          Serial.print(piecesNames[k]);
+        }
+        // if (blackPiecesPosition[k][0] == j && blackPiecesPosition[k][1] == (7 - i)){
+        //   Serial.print(piecesNames[k]);
+        // }
+        // else
+        //   Serial.print(piecesNames[32]);
+      }
+      // Serial.print(chessFieldState[i][j]);
+      // Serial.print(i);
+      // Serial.print(j);
+      Serial.print("\t");
+      Serial.print("|");
+    }
+    Serial.print(" ");
+    Serial.print(8-i);
+    Serial.println();
+    Serial.print("|");
+    for (int j = 0; j < 8; j++){
+      Serial.print("\t");
+      Serial.print("\t");
+      Serial.print("|");
+    }
+    Serial.println("\n---------------------------------------------------------------------------------------------------------------------------------");
+  }
+  for (int i = 0; i < 8; i++){
+    Serial.print("\t");
+    Serial.write(65 + i);
+    Serial.print("\t");
+  }
+  Serial.println();
+}
+
+
+int readMux(int SIG_pin, int channel){
+  int controlPin[] = {S3, S2, S1, S0};
+
+  int muxChannel[16][4]={
+    {0,0,0,0}, //channel 0
+    {1,0,0,0}, //channel 1
+    {0,1,0,0}, //channel 2
+    {1,1,0,0}, //channel 3
+    {0,0,1,0}, //channel 4
+    {1,0,1,0}, //channel 5
+    {0,1,1,0}, //channel 6
+    {1,1,1,0}, //channel 7
+    {0,0,0,1}, //channel 8
+    {1,0,0,1}, //channel 9
+    {0,1,0,1}, //channel 10
+    {1,1,0,1}, //channel 11
+    {0,0,1,1}, //channel 12
+    {1,0,1,1}, //channel 13
+    {0,1,1,1}, //channel 14
+    {1,1,1,1}  //channel 15
+  };
+
+  //loop through the 4 sig
+  for(int i = 0; i < 4; i ++){
+    digitalWrite(controlPin[i], muxChannel[channel][i]);
+  }
+  int val;
+  if (SIG_pin == SIG_PIN1 && channel == 1){
+    val = analogRead(15);
+  }
+  else
+  //read the value at the SIG pin
+  	val = analogRead(SIG_pin);
+
+  //return the value
+  return val;
+}
+
+// "BR","BN","BB","BQ","BK","BB","BN","BR",
+// "BP","BP","BP","BP","BP","BP","BP","BP",
+// "WP","WP","WP","WP","WP","WP","WP","WP",
+// "WR","WN","WB","WQ","WK","WB","WN","WR",
+
+
+void allowedMoves(int piece, int x, int y){
+  for (int i = 0; i < 8; i++) dirFlag[i] = 1;
+  switch(piece){
+    case 1:   // black rook 1
+    case 8:   // black rook 2
+      // if (notAllowedMoveFlag) { notAllowedMoveFlag = false; break;}
+      for (int i = 1; i < 8; i++){
+        if(y + i < 8 && dirFlag[0] && !chessFieldState[x][y + i]) setLed(x, y + i, CRGB(0,255,0));
+        else if (y + i < 8 && dirFlag[0] && chessFieldState[x][y + i] > 16){
+          setLed(x, y + i, CRGB(255,0,0)); dirFlag[0] = false;
+        }
+        else dirFlag[0] = false;
+
+        if(y - i >= 0 && dirFlag[1] && !chessFieldState[x][y - i]) setLed(x, y - i, CRGB(0,255,0));
+        else if (y - i >= 0 && dirFlag[1] && chessFieldState[x][y - i] > 16){
+          setLed(x, y - i, CRGB(255,0,0)); dirFlag[1] = false;
+        }
+        else dirFlag[1] = false;
+
+        if(x + i < 8 && dirFlag[2] && !chessFieldState[x + i][y]) setLed(x + i, y, CRGB(0,255,0));
+        else if (x + i < 8 && dirFlag[2] && chessFieldState[x + i][y] > 16){
+          setLed(x + i, y, CRGB(255,0,0)); dirFlag[2] = false;
+        }
+        else dirFlag[2] = false;
+
+        if(x - i >= 0 && dirFlag[3] && !chessFieldState[x - i][y]) setLed(x - i, y, CRGB(0,255,0));
+        else if (x - i >= 0 && dirFlag[3] && chessFieldState[x - i][y] > 16){
+          setLed(x - i, y, CRGB(255,0,0)); dirFlag[3] = false;
+        }
+        else dirFlag[3] = false;
+      }
+      
+      break;
+    case 25:  // white rook 1
+    case 32:  // white rook 2
+      for (int i = 1; i < 8; i++){
+        if(y + i < 8 && dirFlag[0] && !chessFieldState[x][y + i]) setLed(x, y + i, CRGB(0,255,0));
+        else if (y + i < 8 && dirFlag[0] && chessFieldState[x][y + i] && chessFieldState[x][y + i] < 17){
+          setLed(x, y + i, CRGB(255,0,0)); dirFlag[0] = false;
+        }
+        else dirFlag[0] = false;
+
+        if(y - i >= 0 && dirFlag[1] && !chessFieldState[x][y - i]) setLed(x, y - i, CRGB(0,255,0));
+        else if (y - i >= 0 && dirFlag[1] && chessFieldState[x][y - i] && chessFieldState[x][y - i] < 17){
+          setLed(x, y - i, CRGB(255,0,0)); dirFlag[1] = false;
+        }
+        else dirFlag[1] = false;
+
+        if(x + i < 8 && dirFlag[2] && !chessFieldState[x + i][y]) setLed(x + i, y, CRGB(0,255,0));
+        else if (x + i < 8 && dirFlag[2] && chessFieldState[x + i][y] && chessFieldState[x + i][y] < 17){
+          setLed(x + i, y, CRGB(255,0,0)); dirFlag[2] = false;
+        }
+        else dirFlag[2] = false;
+
+        if(x - i >= 0 && dirFlag[3] && !chessFieldState[x - i][y]) setLed(x - i, y, CRGB(0,255,0));
+        else if (x - i >= 0 && dirFlag[3] && chessFieldState[x - i][y] && chessFieldState[x - i][y] < 17){
+          setLed(x - i, y, CRGB(255,0,0)); dirFlag[3] = false;
+        }
+        else dirFlag[3] = false;
+      }
+      
+      break;
+    case 2:   // black knight 1
+      for (int i = 0; i < 8; i++){
+        knightCheck(2, x, y, knightMoves[i][0], knightMoves[i][1], 1);
+      }
+      
+    case 7:   // black knight 2
+			for (int i = 0; i < 8; i++){
+        knightCheck(7, x, y, knightMoves[i][0], knightMoves[i][1], 1);
+      }
+      
+      break;
+    case 26:  // white knight 1
+    case 31:  // white knight 2
+      // if (notAllowedMoveFlag) { notAllowedMoveFlag = false; break;}
+      if(!chessFieldState[x - 1][y - 2]) setLed(x - 1, y - 2, CRGB(0,255,0));
+      else if((chessFieldState[x - 1][y - 2]) < 17) setLed(x - 1, y - 2, CRGB(255,0,0));
+      
+      if(!chessFieldState[x + 1][y - 2]) setLed(x + 1, y - 2, CRGB(0,255,0));
+      else if((chessFieldState[x + 1][y - 2]) < 17) setLed(x + 1, y - 2, CRGB(255,0,0));
+      
+      if(!chessFieldState[x - 1][y + 2]) setLed(x - 1, y + 2, CRGB(0,255,0));
+      else if((chessFieldState[x - 1][y + 2]) < 17) setLed(x - 1, y + 2, CRGB(255,0,0));
+      
+      if(!chessFieldState[x + 1][y + 2]) setLed(x + 1, y + 2, CRGB(0,255,0));
+      else if((chessFieldState[x + 1][y + 2]) < 17) setLed(x + 1, y + 2, CRGB(255,0,0));
+      
+      if(!chessFieldState[x + 2][y - 1]) setLed(x + 2, y - 1, CRGB(0,255,0));
+      else if((chessFieldState[x + 2][y - 1]) < 17) setLed(x + 2, y - 1, CRGB(255,0,0));
+      
+      if(!chessFieldState[x - 2][y - 1]) setLed(x - 2, y - 1, CRGB(0,255,0));
+      else if((chessFieldState[x - 2][y - 1]) < 17) setLed(x - 2, y - 1, CRGB(255,0,0));
+      
+      if(!chessFieldState[x + 2][y + 1]) setLed(x + 2, y + 1, CRGB(0,255,0));
+      else if((chessFieldState[x + 2][y + 1]) < 17) setLed(x + 2, y + 1, CRGB(255,0,0));
+      
+      if(!chessFieldState[x - 2][y + 1]) setLed(x - 2, y - 1, CRGB(0,255,0));
+      else if((chessFieldState[x - 2][y + 1]) < 17) setLed(x - 2, y + 1, CRGB(255,0,0));
+      
+      
+      break;
+    case 3:   // black bishop 1
+    case 6:   // black bishop 2
+      for (int i = 0; i < 8; i++){
+        if (dirFlag[0] && !chessFieldState[x + i][y + i]) setLed(x + i, y + i, CRGB(0, 255, 0));
+        else if (dirFlag[0] && chessFieldState[x + i][y + i] > 16){
+          setLed(x + i, y + i, CRGB(255, 0, 0));
+          dirFlag[0] = false;
+        }
+        else dirFlag[0] = false;
+
+        if (dirFlag[1] && !chessFieldState[x - i][y - i]) setLed(x - i, y - i, CRGB(0, 255, 0));
+        else if (dirFlag[1] && chessFieldState[x - i][y - i] > 16){
+          setLed(x - i, y - i, CRGB(255, 0, 0));
+          dirFlag[1] = false;
+        }
+        else dirFlag[1] = false;
+
+        if (dirFlag[2] && !chessFieldState[x + i][y - i]) setLed(x + i, y - i, CRGB(0, 255, 0));
+        else if (dirFlag[2] && chessFieldState[x + i][y - i] > 16){
+          setLed(x + i, y - i, CRGB(255, 0, 0));
+          dirFlag[2] = false;
+        }
+        else dirFlag[2] = false;
+
+        if (dirFlag[3] && !chessFieldState[x - i][y + i]) setLed(x - i, y + i, CRGB(0, 255, 0));
+        else if (dirFlag[3] && chessFieldState[x - i][y + i] > 16){
+          setLed(x - i, y + i, CRGB(255, 0, 0));
+          dirFlag[3] = false;
+        }
+        else dirFlag[3] = false;
+      }
+      
+      break;    
+    case 27:  // white bishop 1
+    case 30:  // white bishop 2
+    // if (notAllowedMoveFlag) { notAllowedMoveFlag = false; break;}
+      for (int i = 0; i < 8; i++){
+        if (dirFlag[0] && !chessFieldState[x + i][y + i]) setLed(x + i, y + i, CRGB(0, 255, 0));
+        else if (dirFlag[0] && chessFieldState[x + i][y + i] < 17){
+          setLed(x + i, y + i, CRGB(255, 0, 0));
+          dirFlag[0] = false;
+        }
+        else dirFlag[0] = false;
+
+        if (dirFlag[1] && !chessFieldState[x - i][y - i]) setLed(x - i, y - i, CRGB(0, 255, 0));
+        else if (dirFlag[1] && chessFieldState[x - i][y - i] < 17){
+          setLed(x - i, y - i, CRGB(255, 0, 0));
+          dirFlag[1] = false;
+        }
+        else dirFlag[1] = false;
+
+        if (dirFlag[2] && !chessFieldState[x + i][y - i]) setLed(x + i, y - i, CRGB(0, 255, 0));
+        else if (dirFlag[2] && chessFieldState[x + i][y - i] < 17){
+          setLed(x + i, y - i, CRGB(255, 0, 0));
+          dirFlag[2] = false;
+        }
+        else dirFlag[2] = false;
+
+        if (dirFlag[3] && !chessFieldState[x - i][y + i]) setLed(x - i, y + i, CRGB(0, 255, 0));
+        else if (dirFlag[3] && chessFieldState[x - i][y + i] < 17){
+          setLed(x - i, y + i, CRGB(255, 0, 0));
+          dirFlag[3] = false;
+        }
+        else dirFlag[3] = false;
+      }
+      
+      break;
+    case 4:   // black queen  
+      // if (notAllowedMoveFlag) { notAllowedMoveFlag = false; break;}
+      for (int i = 1; i < 8; i++){
+        if(y + i < 8 && dirFlag[0] && !chessFieldState[x][y + i]) setLed(x, y + i, CRGB(0,255,0));
+        else if (y + i < 8 && dirFlag[0] && chessFieldState[x][y + i] > 16){
+          setLed(x, y + i, CRGB(255,0,0)); dirFlag[0] = false;
+        }
+        else dirFlag[0] = false;
+
+        if(y - i >= 0 && dirFlag[1] && !chessFieldState[x][y - i]) setLed(x, y - i, CRGB(0,255,0));
+        else if (y - i >= 0 && dirFlag[1] && chessFieldState[x][y - i] > 16){
+          setLed(x, y - i, CRGB(255,0,0)); dirFlag[1] = false;
+        }
+        else dirFlag[1] = false;
+
+        if(x + i < 8 && dirFlag[2] && !chessFieldState[x + i][y]) setLed(x + i, y, CRGB(0,255,0));
+        else if (x + i < 8 && dirFlag[2] && chessFieldState[x + i][y] > 16){
+          setLed(x + i, y, CRGB(255,0,0)); dirFlag[2] = false;
+        }
+        else dirFlag[2] = false;
+
+        if(x - i >= 0 && dirFlag[3] && !chessFieldState[x - i][y]) setLed(x - i, y, CRGB(0,255,0));
+        else if (x - i >= 0 && dirFlag[3] && chessFieldState[x - i][y] > 16){
+          setLed(x - i, y, CRGB(255,0,0)); dirFlag[3] = false;
+        }
+        else dirFlag[3] = false;
+        
+        if (dirFlag[4] && !chessFieldState[x + i][y + i]) setLed(x + i, y + i, CRGB(0, 255, 0));
+        else if (dirFlag[4] && chessFieldState[x + i][y + i] > 16){
+          setLed(x + i, y + i, CRGB(255, 0, 0));
+          dirFlag[4] = false;
+        }
+        else dirFlag[4] = false;
+
+        if (dirFlag[5] && !chessFieldState[x - i][y - i]) setLed(x - i, y - i, CRGB(0, 255, 0));
+        else if (dirFlag[5] && chessFieldState[x - i][y - i] > 16){
+          setLed(x - i, y - i, CRGB(255, 0, 0));
+          dirFlag[5] = false;
+        }
+        else dirFlag[5] = false;
+
+        if (dirFlag[6] && !chessFieldState[x + i][y - i]) setLed(x + i, y - i, CRGB(0, 255, 0));
+        else if (dirFlag[6] && chessFieldState[x + i][y - i] > 16){
+          setLed(x + i, y - i, CRGB(255, 0, 0));
+          dirFlag[6] = false;
+        }
+        else dirFlag[6] = false;
+
+        if (dirFlag[7] && !chessFieldState[x - i][y + i]) setLed(x - i, y + i, CRGB(0, 255, 0));
+        else if (dirFlag[7] && chessFieldState[x - i][y + i] > 16){
+          setLed(x - i, y + i, CRGB(255, 0, 0));
+          dirFlag[7] = false;
+        }
+        else dirFlag[7] = false;
+      }
+      
+      break;
+    case 28:  // white queen
+      for (int i = 1; i < 8; i++){
+        if(y + i < 8 && dirFlag[0] && !chessFieldState[x][y + i]) setLed(x, y + i, CRGB(0,255,0));
+        else if (y + i < 8 && dirFlag[0] && chessFieldState[x][y + i] < 17){
+          setLed(x, y + i, CRGB(255,0,0)); dirFlag[0] = false;
+        }
+        else dirFlag[0] = false;
+
+        if(y - i >= 0 && dirFlag[1] && !chessFieldState[x][y - i]) setLed(x, y - i, CRGB(0,255,0));
+        else if (y - i >= 0 && dirFlag[1] && chessFieldState[x][y - i] < 17){
+          setLed(x, y - i, CRGB(255,0,0)); dirFlag[1] = false;
+        }
+        else dirFlag[1] = false;
+
+        if(x + i < 8 && dirFlag[2] && !chessFieldState[x + i][y]) setLed(x + i, y, CRGB(0,255,0));
+        else if (x + i < 8 && dirFlag[2] && chessFieldState[x + i][y] < 17){
+          setLed(x + i, y, CRGB(255,0,0)); dirFlag[2] = false;
+        }
+        else dirFlag[2] = false;
+
+        if(x - i >= 0 && dirFlag[3] && !chessFieldState[x - i][y]) setLed(x - i, y, CRGB(0,255,0));
+        else if (x - i >= 0 && dirFlag[3] && chessFieldState[x - i][y] < 17){
+          setLed(x - i, y, CRGB(255,0,0)); dirFlag[3] = false;
+        }
+        else dirFlag[3] = false;
+        
+        if (dirFlag[4] && !chessFieldState[x + i][y + i]) setLed(x + i, y + i, CRGB(0, 255, 0));
+        else if (dirFlag[4] && chessFieldState[x + i][y + i] < 17){
+          setLed(x + i, y + i, CRGB(255, 0, 0));
+          dirFlag[4] = false;
+        }
+        else dirFlag[4] = false;
+
+        if (dirFlag[5] && !chessFieldState[x - i][y - i]) setLed(x - i, y - i, CRGB(0, 255, 0));
+        else if (dirFlag[5] && chessFieldState[x - i][y - i] < 17){
+          setLed(x - i, y - i, CRGB(255, 0, 0));
+          dirFlag[5] = false;
+        }
+        else dirFlag[5] = false;
+
+        if (dirFlag[6] && !chessFieldState[x + i][y - i]) setLed(x + i, y - i, CRGB(0, 255, 0));
+        else if (dirFlag[6] && chessFieldState[x + i][y - i] < 17){
+          setLed(x + i, y - i, CRGB(255, 0, 0));
+          dirFlag[6] = false;
+        }
+        else dirFlag[6] = false;
+
+        if (dirFlag[7] && !chessFieldState[x - i][y + i]) setLed(x - i, y + i, CRGB(0, 255, 0));
+        else if (dirFlag[7] && chessFieldState[x - i][y + i] < 17){
+          setLed(x - i, y + i, CRGB(255, 0, 0));
+          dirFlag[7] = false;
+        }
+        else dirFlag[7] = false;
+      }
+      
+      break;
+    case 5:   // black king
+      if(!chessFieldState[x + 1][y]) setLed(x + 1, y, CRGB(0,255,0));
+      else if((chessFieldState[x + 1][y]) > 16) setLed(x + 1, y, CRGB(255,0,0));
+      
+      if(!chessFieldState[x - 1][y]) setLed(x - 1, y, CRGB(0,255,0));
+      else if((chessFieldState[x - 1][y]) > 16) setLed(x - 1, y, CRGB(0,255,0));
+      
+      if(!chessFieldState[x][y - 1]) setLed(x, y - 1, CRGB(0,255,0));
+      else if((chessFieldState[x][y - 1]) > 16) setLed(x, y - 1, CRGB(0,255,0));
+      
+      if(!chessFieldState[x][y + 1]) setLed(x, y + 1, CRGB(0,255,0));
+      else if((chessFieldState[x][y + 1]) > 16) setLed(x, y + 1, CRGB(0,255,0));
+      
+      if(!chessFieldState[x + 1][y + 1]) setLed(x + 1, y + 1, CRGB(0,255,0));
+      else if((chessFieldState[x + 1][y + 1]) > 16) setLed(x + 1, y + 1, CRGB(0,255,0));
+      
+      if(!chessFieldState[x - 1][y - 1]) setLed(x - 1, y - 1, CRGB(0,255,0));
+      else if((chessFieldState[x - 1][y - 1]) > 16) setLed(x - 1, y - 1, CRGB(0,255,0));
+      
+      if(!chessFieldState[x + 1][y - 1]) setLed(x + 1, y - 1, CRGB(0,255,0));
+      else if((chessFieldState[x + 1][y - 1]) > 16) setLed(x + 1, y - 1, CRGB(0,255,0));
+      
+      if(!chessFieldState[x - 1][y + 1]) setLed(x - 1, y + 1, CRGB(0,255,0));
+      else if((chessFieldState[x - 1][y + 1]) > 16) setLed(x - 1, y + 1, CRGB(0,255,0));
+      
+      
+      break;
+    case 29:  // white king
+      // if (notAllowedMoveFlag) { notAllowedMoveFlag = false; break;}
+      if (!checkIfCheck_king(x + 1, y)){
+        if(!chessFieldState[x + 1][y]) setLed(x + 1, y, CRGB(0,255,0));
+      	else if((chessFieldState[x + 1][y]) <= 16) setLed(x + 1, y, CRGB(255,0,0));
+      }
+      if (!checkIfCheck_king(x - 1, y)){
+        if(!chessFieldState[x - 1][y]) setLed(x - 1, y, CRGB(0,255,0));
+        else if((chessFieldState[x - 1][y]) > 16) setLed(x - 1, y, CRGB(255,0,0));
+      }
+      if (!checkIfCheck_king(x, y - 1)){
+        if(!chessFieldState[x][y - 1]) setLed(x, y - 1, CRGB(0,255,0));
+        else if((chessFieldState[x][y - 1]) > 16) setLed(x, y - 1, CRGB(255,0,0));
+      }
+      if (!checkIfCheck_king(x, y + 1)){
+        if(!chessFieldState[x][y + 1]) setLed(x, y + 1, CRGB(0,255,0));
+        else if((chessFieldState[x][y + 1]) > 16) setLed(x, y + 1, CRGB(255,0,0));
+      }
+      if (!checkIfCheck_king(x + 1, y + 1)){
+        if(!chessFieldState[x + 1][y + 1]) setLed(x + 1, y + 1, CRGB(0,255,0));
+        else if((chessFieldState[x + 1][y + 1]) > 16) setLed(x + 1, y + 1, CRGB(255,0,0));
+      }
+      if (!checkIfCheck_king(x - 1, y - 1)){
+        if(!chessFieldState[x - 1][y - 1]) setLed(x - 1, y - 1, CRGB(0,255,0));
+        else if((chessFieldState[x - 1][y - 1]) > 16) setLed(x - 1, y - 1, CRGB(255,0,0));
+      }
+      if (!checkIfCheck_king(x + 1, y - 1)){
+        if(!chessFieldState[x + 1][y - 1]) setLed(x + 1, y - 1, CRGB(0,255,0));
+        else if((chessFieldState[x + 1][y - 1]) > 16) setLed(x + 1, y - 1, CRGB(255,0,0));
+      }
+      if (!checkIfCheck_king(x - 1, y + 1)){
+        if(!chessFieldState[x - 1][y + 1]) setLed(x - 1, y + 1, CRGB(0,255,0));
+        else if((chessFieldState[x - 1][y + 1]) > 16) setLed(x - 1, y + 1, CRGB(255,0,0));
+      }
+      
+      break;
+    case 9: // black pawns
+    case 10:
+    case 11:
+    case 12:
+    case 13:
+    case 14:
+    case 15:
+    case 16: 
+      // if (notAllowedMoveFlag) { notAllowedMoveFlag = false; break;}
+       if (!chessFieldState[x + 1][y]){
+       	setLed(x + 1, y, CRGB(0,255,0));
+      	if (x == 1 && !chessFieldState[x + 2][y])
+       		setLed(x + 2, y, CRGB(0,255,0)); 
+      }
+      if (chessFieldState[x + 1][y + 1] > 16) setLed(x + 1, y + 1, CRGB(255,0,0));
+      if (chessFieldState[x + 1][y - 1] > 16) setLed(x + 1, y - 1, CRGB(255,0,0));     
+      
+      break;
+    case 17: //white pawns
+    case 18:
+    case 19:
+    case 20:
+    case 21:
+    case 22:
+    case 23:
+    case 24:
+      // if (notAllowedMoveFlag) { notAllowedMoveFlag = false; break;}
+       if (!chessFieldState[x - 1][y]){
+       	setLed(x - 1, y, CRGB(0,255,0));
+      	if (x == 6 && !chessFieldState[x - 2][y])
+       		setLed(x - 2, y, CRGB(0,255,0)); 
+      }
+      if (chessFieldState[x - 1][y + 1] < 17) setLed(x - 1, y + 1, CRGB(255,0,0));
+      if (chessFieldState[x - 1][y - 1] < 17) setLed(x - 1, y - 1, CRGB(255,0,0));      
+      
+      break;
+  }
+  setLed(x, y, CRGB(255,255,0));
+  FastLED.show();
+}
+
+void setLed(int x, int y, CRGB c)
+{
+  if((x >= 0) && (x < 8) && (y >= 0) && (y < 8)){
+    // if (raisedPieceName < 16 && chessFieldState[x][y])
+    for (int i = 0; i < 6; i++){
+      leds[ledMapArray[x][7-y][i]] = c; 
+    }
+  }
+}
+
+void fillChessFieldState(){
+  for (int i = 0; i < 32; i++){
+    if (piecesPosition[i][0] < 8)
+      chessFieldState[piecesPosition[i][0]][piecesPosition[i][1]] = i + 1;
+  }
+}
+
+void mapLeds(){
+  for (int y = 0; y < 8; y++)
+  {
+    for (int x = 0; x < 8; x++)
+    {
+        ledMapArray[x][y][0] = 0+48*y+x*3;
+        ledMapArray[x][y][1] = 1+48*y+x*3;
+        ledMapArray[x][y][2] = 2+48*y+x*3;
+        ledMapArray[x][y][3] = 45+48*y-x*3;
+        ledMapArray[x][y][4] = 46+48*y-x*3;
+        ledMapArray[x][y][5] = 47+48*y-x*3;
+    }
+  } 
+}
+
+int rook(int x, int y, int x1, int y1)
+{ // x,y start coordinates, x1,y1 finish coordinates
+  // if a == 1 - allowed move, a == 0 NOT allowed move
+  int allowed = 1;
+  if (y == y1){
+    for (int i = x + 1; i < x1; i++){
+      if (chessFieldState[i][y] != 0){
+        allowed = 0;
+        break;
+      }
+    }
+    for (int i = x - 1; i > x1; i--){
+      if (chessFieldState[i][y] != 0){
+        allowed = 0;
+        break;
+      }
+    }
+  }
+  else if (x == x1){
+    for (int i = y + 1; i < y1; i++){
+      if (chessFieldState[x][i] != 0){
+        allowed = 0;
+        break;
+      }
+    }
+    for (int i = y - 1; i > y1; i--){
+      if (chessFieldState[x][i] != 0){
+        allowed = 0;
+        break;
+      }
+    }
+  }
+  else{
+    allowed = 0;
+  }
+  return allowed;
+}
+
+int bishop(int x, int y, int x1, int y1)
+{
+    int allowed = 1, i;
+    if (abs(x - x1) != abs(y - y1)){
+        allowed = 0;
+    }
+    if ((x < x1) && (y < y1)){
+        for (i = 1; (x + i) < x1; i++){
+            if (chessFieldState[x + i][y + i] != 0)
+                allowed = 0;
+        }
+    }
+    else if ((x > x1) && (y > y1)){
+        for (i = 1; (x - i) > x1; i++){
+            if (chessFieldState[x - i][y - i] != 0)
+                allowed = 0;
+        }
+    }
+    else if ((x > x1) && (y < y1)){
+        for (i = 1; (x - i) > x1; i++){
+            if (chessFieldState[x - i][y + i] != 0)
+                allowed = 0;
+        }
+    } 
+    else if ((x < x1) && (y > y1)){
+        for (i = 1; (x + i) < x1; i++){
+            if (chessFieldState[x + i][y - i] != 0)
+                allowed = 0;
+        }
+    }
+    return allowed;
+}
+
+int queen(int x, int y, int x1, int y1)
+{
+    if (x == x1 || y == y1)
+    {
+        // if queen moves in + direction
+        return rook(x, y, x1, y1);
+    }
+    else if (abs(x - x1) == abs(y - y1))
+    {
+        // if queen moves in diagnol direction 
+        return bishop(x, y, x1, y1);
+    }
+    else
+        return 0;
+}
+
+int horse(int x, int y, int x1, int y1)
+{
+    if ((y1 == y + 2 && x1 == x + 1) || (y1 == y + 2 && x1 == x - 1) || (y1 == y + 1 && x1 == x + 2) || \
+        (y1 == y + 1 && x1 == x - 2) || (y1 == y - 1 && x1 == x + 2) || (y1 == y - 1 && x1 == x - 2) || \
+        (y1 == y - 2 && x1 == x + 1) || (y1 == y - 2 && x1 == x - 1))
+    {
+        return 1;
+    }
+    return 0;
+}
+
+int pawn(int x, int y, int x1, int y1)
+{
+    int allowed = 0;
+    if (chessFieldState[x][y] >= 9 && chessFieldState[x][y] <= 16){
+        if (x == 1){
+            if (x1 == (x + 2) && y1 == y){
+                if (chessFieldState[x1][y1] == 0 && chessFieldState[x + 1][y] == 0){
+                    allowed = 1;
+                }
+            }
+        }
+        if (x1 == x + 1 && y1 == y){
+            if (chessFieldState[x1][y1] == 0){
+                allowed = 1;
+            }
+        }
+        else if (x1 == (x + 1) && (y1 == (y + 1) || y1 == (y - 1))){
+            if (chessFieldState[x1][y1] > 16) {
+                allowed = 1;
+            }
+        }
+    }
+    else if (chessFieldState[x][y] >= 17 && chessFieldState[x][y] <= 24){
+        if (x == 6){
+            if (x1 == (x - 2) && y1 == y){
+                if (chessFieldState[x1][y1] == 0 && chessFieldState[x - 1][y] == 0){
+                    allowed = 1;
+                }
+            }
+        }
+        if (x1 == (x - 1) && y1 == y){
+            if (chessFieldState[x1][y1] == 0){
+                allowed = 1;
+            }
+        }
+        else if (x1 == (x - 1) && (y1 == (y - 1) || y1 == (y + 1))){
+            if (chessFieldState[x1][y1] < 17 && !chessFieldState[x1][y1]){
+                allowed = 1;
+            }
+        }
+    }
+    // if (allowed == 1){
+    //     if (piecesPosition[x][y] >= 9 && piecesPosition[x][y] <= 16){
+    //         if (x1 == 7)
+    //             return 2;
+    //     }
+    //     else if (piecesPosition[x][y] >= 17 && piecesPosition[x][y] <= 24){
+    //         if (x1 == 0)
+    //             return 2;
+    //     }
+    // }
+    return allowed;
+}
+
+bool checkIfCheck(bool turn){
+  // return : 0 - brak szacha; 1 - szach
+  // turn: 0 - ruch bialych; 1 - ruch czarnych
+  int t = 0, i, j, xKing, yKing;
+  int pieces [9][2] = {{9,17}, {16, 24}, {2, 26}, {7, 31}, {4, 28}, {1, 25}, {8, 32}, {3, 27}, {6, 30}};
+		if(turn == 0){
+			xKing = piecesPosition[28][0];
+			yKing = piecesPosition[28][1];
+		}
+  	else{
+      xKing = piecesPosition[4][0];
+			yKing = piecesPosition[4][1];
+    }
+    for (i = 0; i <= 7; i++)
+    {
+      for (j = 0; j <= 7; j++)
+      {
+        if (t == 1)
+        {
+					// check
+          Serial.println("############################################################## szach ##############################################################\n");
+          return 1;
+        }
+
+        if (chessFieldState[i][j] >= pieces[0][turn] && chessFieldState[i][j] <= pieces[1][turn]) //B: 9 16 //W: 17 24
+          t = pawn(i, j, xKing, yKing);
+        else if (chessFieldState[i][j] == pieces[2][turn] || chessFieldState[i][j] == pieces[3][turn]) //B: 2 7 //W: 26 31
+          t = horse(i, j, xKing, yKing);
+        else if (chessFieldState[i][j] == pieces[4][turn]) //B: 4 //W: 28
+          t = queen(i, j, xKing, yKing);
+        else if (chessFieldState[i][j] == pieces[5][turn] || chessFieldState[i][j] == pieces[6][turn]) //B: 1 3 //W: 25 32
+          t = rook(i, j, xKing, yKing);
+        else if (chessFieldState[i][j] == pieces[7][turn] || chessFieldState[i][j] == pieces[8][turn]) //B: 3 6 //W: 27 30
+          t = bishop(i, j, xKing, yKing);
+      } // for
+    }   // for
+  return 0;
+}
+
+bool checkIfCheck_king(int x1, int y1){
+  int t = 0, i, j;
+  bool br = 0;
+
+    for (i = 0; i <= 7; i++)
+    {
+      for (j = 0; j <= 7; j++)
+      {
+        if (t == 1)
+        {
+					// check
+          Serial.println("############################################################## szach ##############################################################\n");
+          br = 1;
+          break;
+        }
+        // else if (t == 2){
+        //   // promotion in biedornka
+        //   Serial.println("############################################################# promocja #############################################################\n");
+        //   br = 1;
+        //   break;
+        // }
+
+        if (chessFieldState[i][j] >= 9 && chessFieldState[i][j] <= 16)
+          t = pawn(i, j, x1, y1);
+        else if (chessFieldState[i][j] == 2 || chessFieldState[i][j] == 7)
+          t = horse(i, j, x1, y1);
+        else if (chessFieldState[i][j] == 4)
+          t = queen(i, j, x1, y1);
+        else if (chessFieldState[i][j] == 1 || chessFieldState[i][j] == 8)
+          t = rook(i, j, x1, y1);
+        else if (chessFieldState[i][j] == 3 || chessFieldState[i][j] == 6)
+          t = bishop(i, j, x1, y1);
+
+      } // for
+      if (br == 1) break;
+    }   //  for
+  return br;
+}
+
+void knightCheck(int knight, int x, int y, int xSwap, int ySwap, int turn){
+  int tmp, check;
+  tmp = chessFieldState[x + xSwap][y + ySwap];
+  chessFieldState[x + xSwap][y + ySwap] = knight;
+  chessFieldState[x][y] = 0;
+  check = checkIfCheck(turn);
+  chessFieldState[x + xSwap][y + ySwap] = tmp;
+  //chessFieldState[x][y] = knight;
+  if (!check){
+    if(!tmp) setLed(x + xSwap, y + ySwap, CRGB(0,255,0));
+    else if(tmp > 16) setLed(x + xSwap, y + ySwap, CRGB(255,0,0));
+  }
+}
